@@ -1,0 +1,263 @@
+---
+title: "QMF Final Project"
+author: "Ajay Dugar"
+date: "11/13/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+library(signal)
+library(oce)
+library(latex2exp)
+library(actuar)
+```
+
+
+## Generate a Poisson process
+
+First, we generate a sequence of independent exponential random variables, with $\lambda$ as the parameter, giving us a CDF of $P[\tau_i \geq y] = e^{-\lambda y}$. Allow $T_n = \sum_{i=1}^n \tau_i$. Using this sequence, $T_n$, we can generate a Poisson process, $N_t$, where $N_t = \sum_{n\geq 1} 1_{t\geq T_N}$
+
+```{r}
+set.seed(6083)
+n = 20
+lambda = 2
+tau = rexp(n = n, rate = lambda) #generate independent exponential random variables
+T_n = cumsum(tau)
+time_steps = 10000
+tmax = max(T_n)+1
+time = seq(from = 0, to = tmax, length.out = time_steps)
+N_t = time
+for (i in 1:time_steps){
+  N_t[i] = sum(N_t[i] > T_n)
+}
+plot(time, N_t, ylab = TeX("N_t"), xlab = TeX("t"), type = "l", main =  TeX("Simple Poisson Process, $\\lambda = 2, T_n = 20"))
+```
+
+The behavior of this Poisson process is right-continuous with left-sided limits (RCLL), with jumps of 1 at the jump times $T_i$, with the $T_{i+1} - T_{i}$ being exponentially distributed. This gives a probability distribution of the Poisson process for a given time, $t$, and a given rate of occurrence, $\lambda$, of $P[N_t = n] = e^{-\lambda t} \frac{(\lambda t)^n}{n!}$.
+
+
+$$N_t \sim Pois(k\lambda)$$
+
+This Poisson process is more generally a Lévy process, satisfying the following conditions:
+1) Increments are independent, i.e. $E[X_t - X_s|t,s] = E[X_t - X_s], t \geq s$
+2) Increments are stationary, specifically $X_t-X_s \sim Poisson(\lambda (t-s)), t \geq s$
+3) The process continuous: $lim_{h \rightarrow 0} P(|X_{t+h} - X_t| > \epsilon) = 0; \forall \space \epsilon, \forall t$
+
+Since jump-diffusion processes don't necessarily have a clean closed form distribution function, we can use the characteristic function instead. For a given random variable X, the characteristic function is:
+
+$$\Phi_t(u) = E[e^{iu X}]$$
+
+Specifically for the Poisson process, the characteristic function is:
+$$E[e^{iuN_t}] = e^{\lambda t (e^{i u} - 1)}$$
+Since we are dealing with the simulation of financial assets, the jump size should not be a singular value. This leads to a compound Poisson process where the distribution of times between jumps remains exponential, but the values of the jumps will have a different distribution. Allowing $N_t$ to remain a Poisson process with parameter $\lambda$, but now let $\{Y_i\}_{i \geq 1}$ be a sequence of independent random variables with distribution function $f(x)$. Then 
+$$X_t = \sum_{i=1}^{N_t} Y_i$$
+
+gives a compound Poisson process, $X_t$. The distribution function is not explicitly known for a given time $t$, but the characteristic function has the form:
+
+$$E[e^{iuX_t}|N_t ] = e^{t \lambda \int_\mathbb{R} e^{iux}-1 f(dx)}$$
+Simulating this compound process, $X_T$, where you have $n$ independent jumps, i.e. $N_T = n$, on $t \in [0,T]$ requires 3 steps:
+1) Simulating $N_T$ from a Poisson distribution with parameter $\lambda T$
+2) Simulating $n$ uniform random variables $\{U_i\}_{i=1}^{n}$ on $[0,T]$
+3) Simulating $n$ independent variables $\{Y_i\}_{i=1}^{n}$ with distribution $f$
+
+Now we can generate the process:
+$$X_t = \sum_{i=1}^{n} Y_i 1_{U_i \leq t}$$
+
+```{r}
+set.seed(6083)
+
+# In this case, our jump size will be Gaussian, N(0,1)
+Y_i = rnorm(n = length(T_n), mean = 0, sd = 1)
+
+X_t = time
+for (i in 1:time_steps){
+  X_t[i] = sum((X_t[i]>T_n)*Y_i)
+}
+
+plot(time, X_t, ylab = TeX("X_t"), xlab = TeX("t"), type = "l", main =  TeX("Compound Poisson Process, $\\lambda = 2, T_n = 20"))
+```
+
+Now the next step is to generate a jump-diffusion process. This will be accomplished by combining 2 different stochastic processes:
+1) The Compound Poisson Process $\sum_{i=1}^{N_t} Y_i 1_{U_i \leq t}$
+2) Brownian motion with drift $\mu t + \sigma B_t$
+
+```{r}
+set.seed(6083)
+
+sigma = 0.1
+mu = 0.05
+X2_t = X_t + sigma*rnorm(length(time)) + mu*time
+
+plot(time, X2_t, ylab = TeX("X_t"), xlab = TeX("t"), type = "l", main =  TeX("Jump-Diffusion Process, $\\lambda = 2, T_n = 20, \\sigma = 0.25, \\mu = 0.05"))
+```
+
+Now we can simulate an exponential Levy model which may be commonly referred to as the Merton Model:
+
+$$S_t = S_0 e^{X_t}$$
+
+where $X_t$ is the jump-diffusion process from above.
+
+```{r}
+S_0 = 10
+
+S_t = S_0*exp(X2_t)
+
+plot(time, S_t, ylab = TeX("S_t"), xlab = TeX("t"), type = "l", main =  TeX("Merton Model"))
+```
+
+This form can be written as a generalization of the basic Black-Scholes model:
+
+$$\frac{dS_t}{S_{t-}} = (\mu+r)dt+\sigma dB_t + dJ_t$$
+With
+$$dJ_i = e^{Y_i}-1$$
+
+Let us consider the payoff of a geometric Asian call option with this model. The payoff is as following:
+
+$$C(K) = max(A(0, T) - K, 0)$$
+Where:
+
+$$A(0, T) = exp(\frac{1}{T} \int_{0}^{T} ln(S_t) dt) = exp(\frac{ln(S_0)}{T} \int_{0}^{T} (\mu+r) t + \sigma B_t + \sum_{i=1}^{N_t} Y_i \space dt) $$
+
+Let us simulate the Merton Model for the Asian option prices:
+
+```{r}
+spot_prices = seq(90, 110, length.out = 200)
+K = 100
+r = 0.05
+sigma = 0.02
+T = 1
+
+sigma_tilde = 0.2
+lambda = 3
+
+S_0 = 100
+```
+
+```{r}
+set.seed(6083)
+
+asian_prices = c()
+
+for (i in spot_prices){
+  
+  simulated_values = c()
+  
+  for (j in seq(1, 10)){
+    
+    n = 252
+    tau = rexp(n = n, rate = lambda) 
+    T_n = cumsum(tau)
+    time_steps = 1000
+    tmax = max(T_n)+1
+    time = seq(from = 0, to = tmax, length.out = time_steps)
+    N_t = time
+    for (i in 1:time_steps){
+      N_t[i] = sum(N_t[i] > T_n)
+    }
+    
+    Y_i = rnorm(n = length(T_n), mean = 0, sd = sigma_tilde)
+    
+    X_t = time
+    for (i in 1:time_steps){
+      X_t[i] = sum((X_t[i]>T_n)*Y_i)
+    }
+    
+    X2_t = X_t + rnorm(length(time), sd = sigma)
+    
+  }
+  
+  asian_prices = c(X2_t, mean(X2_t))
+}
+```
+
+Taking a look at one of our reference underlying paths:
+
+```{r}
+plot(X2_t, type = "l", ylab = TeX("X_t"), xlab = "t")
+```
+
+
+Let us compare this to a vanilla European call option, with payoff:
+
+$$C(K) = \Phi( \frac{ln(\frac{S_T}{K}) + (r+\frac{\sigma^2}{2})T}{\sigma \sqrt{T}}) - \Phi( \frac{ln(\frac{S_T}{K}) + (r+\frac{\sigma^2}{2})T}{\sigma \sqrt{T}} - \sigma \sqrt{T})Ke^{-rT}$$
+
+```{r}
+T = 0.25
+
+d1 = (log(spot_prices/K) + (r + 0.5*sigma^2)*T)/(sigma*sqrt(T))
+d2 = d1 - sigma*sqrt(T)
+euro_gbm = pnorm(d1)*spot_prices - pnorm(d2)*K*exp(-r*T)
+
+d1 = (log(spot_prices/K) + (r + 0.5*sqrt(sigma^2 + lambda*sigma_tilde^2*T)^2)*T)/(sqrt(sigma^2 + lambda*sigma_tilde^2*T)*sqrt(T))
+d2 = d1 - sqrt(sigma^2 + lambda*sigma_tilde^2*T)*sqrt(T)
+euro_jd = pnorm(d1)*spot_prices - pnorm(d2)*K*exp(-r*T)
+
+sigma_g = sigma/sqrt(3)
+b = 0.5*(r-0.5*sigma_g^2)
+d1 = (log(spot_prices/K)+(b+0.5*sigma_g^2)*T)/(sigma_g*sqrt(T))
+d2 = d1 - sigma_g*sqrt(T)
+asian_gbm = pnorm(d1)*spot_prices*exp((b-r)*T)-K*exp(-r*T)*pnorm(d2)
+
+sigma_g = sqrt(sigma^2 + lambda*sigma_tilde^2*T)/sqrt(3)
+b = 0.5*(r-0.5*sigma_g^2)
+d1 = (log(spot_prices/K)+(b+0.5*sigma_g^2)*T)/(sigma_g*sqrt(T))
+d2 = d1 - sigma_g*sqrt(T)
+asian_jd = pnorm(d1)*spot_prices*exp((b-r)*T)-K*exp(-r*T)*pnorm(d2)
+  
+plot(spot_prices, euro_gbm, type = "l", col = "black", xlim = c(90, 105), ylim = c(0, 10), xlab = "Spot Prices", ylab = "Option Value", main = "Option values 3 months from maturity")
+lines(x = spot_prices, y = euro_jd, type = "l", col = "green")
+lines(x = spot_prices, y = asian_gbm, type = "l", col = "blue")
+lines(x = spot_prices, y = asian_jd, type = "l", col = "red")
+lines(x = spot_prices, y = asian_sim, type = "l", col = "cyan")
+legend(90, 6, legend=c("European (GBM)", "European (JD)", "Geometric Asian (GBM)", "Geometric Asian (JD)"), col=c("black","green", "blue", "red"), lty=1, cex=0.8)
+```
+
+```{r}
+T = 1/365
+
+d1 = (log(spot_prices/K) + (r + 0.5*sigma^2)*T)/(sigma*sqrt(T))
+d2 = d1 - sigma*sqrt(T)
+euro_gbm = pnorm(d1)*spot_prices - pnorm(d2)*K*exp(-r*T)
+
+d1 = (log(spot_prices/K) + (r + 0.5*sqrt(sigma^2 + lambda*sigma_tilde^2*T)^2)*T)/(sqrt(sigma^2 + lambda*sigma_tilde^2*T)*sqrt(T))
+d2 = d1 - sqrt(sigma^2 + lambda*sigma_tilde^2*T)*sqrt(T)
+euro_jd = pnorm(d1)*spot_prices - pnorm(d2)*K*exp(-r*T)
+
+sigma_g = sigma/sqrt(3)
+b = 0.5*(r-0.5*sigma_g^2)
+d1 = (log(spot_prices/K)+(b+0.5*sigma_g^2)*T)/(sigma_g*sqrt(T))
+d2 = d1 - sigma_g*sqrt(T)
+
+asian_gbm = pnorm(d1)*spot_prices*exp((b-r)*T)-K*exp(-r*T)*pnorm(d2)
+
+sigma_g = sqrt(sigma^2 + lambda*sigma_tilde^2*T)/sqrt(3)
+b = 0.5*(r-0.5*sigma_g^2)
+d1 = (log(spot_prices/K)+(b+0.5*sigma_g^2)*T)/(sigma_g*sqrt(T))
+d2 = d1 - sigma_g*sqrt(T)
+asian_jd = pnorm(d1)*spot_prices*exp((b-r)*T)-K*exp(-r*T)*pnorm(d2)
+  
+plot(spot_prices, euro_gbm, type = "l", col = "black", xlim = c(99.7, 100.1), ylim = c(0, 0.15), xlab = "Spot Prices", ylab = "Option Value", main = "Option values 1 day from maturity")
+lines(x = spot_prices, y = euro_jd, type = "l", col = "green")
+lines(x = spot_prices, y = asian_gbm, type = "l", col = "blue")
+lines(x = spot_prices, y = asian_jd, type = "l", col = "red")
+lines(x = spot_prices, y = asian_sim, type = "l", col = "cyan")
+legend(99.7, 0.15, legend=c("European (GBM)", "European (JD)", "Geometric Asian (GBM)", "Geometric Asian (JD)"), col=c("black","green", "blue", "red"), lty=1, cex=0.8)
+```
+
+
+# References
+R. Merton, Option pricing when underlying stock returns are discontinuous, J. Financial Economics, 3 (1976), pp. 125–144.
+
+P. Carr and D. Madan, Option valuation using the fast Fourier transform, J. Comput. Finance, 2 (1998), pp. 61–73.
+
+R. Cont and P. Tankov, Financial Modelling with Jump Processes,
+Chapman & Hall / CRC Press, 2004.
+
+P. Tankov, L´evy Processes in Finance: Inverse Problems and Dependence
+Modelling, PhD thesis, Ecole Polytechnique, France, 2004.
+
+Kemna, A.G.Z.; Vorst, A.C.F.; Rotterdam, E.U.; Instituut, Econometrisch (1990), A Pricing Method for Options Based on Average Asset Values
+
+Tankov, Peter & Voltchkova, Ekaterina. (2009). Jump-difiusion models: a practitioner's guide. Banque et Marchés. 
